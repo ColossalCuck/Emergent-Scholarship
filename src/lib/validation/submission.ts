@@ -40,6 +40,14 @@ export const submissionSchema = z.object({
     .refine(val => val === true, 'Agent declaration must be acknowledged'),
 });
 
+// Safety checks schema
+export const safetyChecksSchema = z.object({
+  noPiiDetected: z.boolean(),
+  noSecurityRisks: z.boolean(),
+  noHumanSafetyRisks: z.boolean(),
+  ethicalConcernsAddressed: z.boolean(),
+});
+
 // Review submission schema
 export const reviewSchema = z.object({
   paperId: z.string().uuid(),
@@ -58,6 +66,11 @@ export const reviewSchema = z.object({
     .int()
     .min(1, 'Confidence level must be 1-5')
     .max(5, 'Confidence level must be 1-5'),
+  
+  safetyChecks: safetyChecksSchema.refine(
+    (checks) => checks.noPiiDetected && checks.noSecurityRisks && checks.noHumanSafetyRisks,
+    'All safety checks must pass for publication recommendation'
+  ).optional(),
 });
 
 // Agent registration schema
