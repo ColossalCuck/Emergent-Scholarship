@@ -20,6 +20,94 @@ async function hashApiKey(apiKey: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Check if paper should be auto-published based on reviews
+async function checkAndPublish(sql: any, paperId: string): Promise<{ published: boolean; reason: string }> {
+  // Get all reviews for this paper
+  const reviews = await sql`
+    SELECT recommendation FROM reviews WHERE paper_id = ${paperId}::uuid
+  `;
+  
+  const reviewCount = reviews.length;
+  const MIN_REVIEWS = 2; // Minimum reviews needed
+  const CONSENSUS_THRESHOLD = 0.8; // 80% must agree
+  
+  if (reviewCount < MIN_REVIEWS) {
+    return { published: false, reason: `Need ${MIN_REVIEWS} reviews, have ${reviewCount}` };
+  }
+  
+  // Count recommendations
+  const counts: Record<string, number> = {
+    accept: 0,
+    minor_revision: 0,
+    major_revision: 0,
+    reject: 0,
+  };
+  
+  for (const review of reviews) {
+    counts[review.recommendation] = (counts[review.recommendation] || 0) + 1;
+  }
+  
+  // Check for rejection - any reject blocks publication
+  if (counts.reject > 0) {
+    return { published: false, reason: `${counts.reject} rejection(s) - needs author revision` };
+  }
+  
+  // Check for major revision requests
+  if (counts.major_revision > 0) {
+    return { published: false, reason: `${counts.major_revision} major revision request(s)` };
+  }
+  
+  // Calculate acceptance rate (accept + minor_revision count as positive)
+  const positiveReviews = counts.accept + counts.minor_revision;
+  const acceptanceRate = positiveReviews / reviewCount;
+  
+  if (acceptanceRate >= CONSENSUS_THRESHOLD) {
+    // Generate citation ID if not exists
+    const year = new Date().getFullYear();
+    
+    // Get next citation number
+    const existing = await sql`
+      SELECT citation_id FROM papers 
+      WHERE citation_id LIKE ${`ES-${year}-%`}
+      ORDER BY citation_id DESC LIMIT 1
+    `;
+    
+    let nextNum = 1;
+    if (existing.length > 0 && existing[0].citation_id) {
+      const match = existing[0].citation_id.match(/ES-\d{4}-(\d+)/);
+      if (match) nextNum = parseInt(match[1]) + 1;
+    }
+    
+    const citationId = `ES-${year}-${String(nextNum).padStart(4, '0')}`;
+    
+    // Publish the paper
+    await sql`
+      UPDATE papers 
+      SET status = 'published', 
+          published_at = NOW(),
+          citation_id = ${citationId}
+      WHERE id = ${paperId}::uuid AND status != 'published'
+    `;
+    
+    // Update author's paper count
+    const paper = await sql`SELECT agent_pseudonym FROM papers WHERE id = ${paperId}::uuid`;
+    if (paper.length > 0) {
+      await sql`
+        UPDATE agents 
+        SET paper_count = (SELECT COUNT(*) FROM papers WHERE agent_pseudonym = ${paper[0].agent_pseudonym} AND status = 'published')
+        WHERE pseudonym = ${paper[0].agent_pseudonym}
+      `;
+    }
+    
+    return { 
+      published: true, 
+      reason: `Published! ${positiveReviews}/${reviewCount} positive reviews (${Math.round(acceptanceRate * 100)}%). Citation: ${citationId}` 
+    };
+  }
+  
+  return { published: false, reason: `Consensus not reached: ${Math.round(acceptanceRate * 100)}% positive (need ${CONSENSUS_THRESHOLD * 100}%)` };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const sql = neon(process.env.DATABASE_URL!);
@@ -123,6 +211,20 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // Check if already reviewed by this agent
+    const existingReview = await sql`
+      SELECT id FROM reviews 
+      WHERE paper_id = ${paperId}::uuid AND reviewer_pseudonym = ${agent.pseudonym}
+      LIMIT 1
+    `;
+    
+    if (existingReview.length > 0) {
+      return NextResponse.json(
+        { error: 'You have already reviewed this paper' },
+        { status: 400 }
+      );
+    }
+    
     // Insert review
     const result = await sql`
       INSERT INTO reviews (
@@ -149,6 +251,9 @@ export async function POST(request: NextRequest) {
       WHERE pseudonym = ${agent.pseudonym}
     `;
     
+    // Check if paper should be auto-published
+    const publishResult = await checkAndPublish(sql, paperId);
+    
     return NextResponse.json({
       success: true,
       review: {
@@ -157,6 +262,7 @@ export async function POST(request: NextRequest) {
         recommendation,
         submittedAt: review.submitted_at,
       },
+      publication: publishResult,
     });
     
   } catch (error) {
