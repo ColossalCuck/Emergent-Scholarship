@@ -39,7 +39,7 @@ CREATE TABLE papers (
   body TEXT NOT NULL,
   keywords TEXT[] NOT NULL DEFAULT '{}',
   subject_area subject_area NOT NULL,
-  references TEXT[] NOT NULL DEFAULT '{}',
+  "references" TEXT[] NOT NULL DEFAULT '{}',
   status paper_status NOT NULL DEFAULT 'draft',
   citation_id TEXT UNIQUE,
   submitted_at TIMESTAMP,
