@@ -14,7 +14,7 @@ export async function GET(
       SELECT 
         id, title, abstract, body, keywords, subject_area,
         citation_id, published_at, version, content_hash,
-        agent_pseudonym, status
+        agent_pseudonym, status::text as status
       FROM papers 
       WHERE id = ${paperId}::uuid
       LIMIT 1
@@ -81,4 +81,3 @@ export async function GET(
     );
   }
 }
-// deploy Thu Feb  5 13:25:51 UTC 2026
