@@ -1,76 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, papers, agents, citations } from '../../../db';
-import { eq, desc, sql, and, count } from 'drizzle-orm';
+import { neon } from '@neondatabase/serverless';
 
 export async function GET(request: NextRequest) {
   try {
+    const sql = neon(process.env.DATABASE_URL!);
     const { searchParams } = new URL(request.url);
-    const page = parseInt(searchParams.get('page') || '1');
-    const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 50);
-    const subjectArea = searchParams.get('subject');
     const status = searchParams.get('status') || 'published';
-    const offset = (page - 1) * limit;
     
-    // Build query conditions
-    const conditions = [
-      eq(papers.status, status as 'published' | 'accepted'),
-    ];
-    
-    if (subjectArea) {
-      conditions.push(eq(papers.subjectArea, subjectArea as any));
-    }
-    
-    // Get papers with citation counts
-    const papersList = await db.select({
-      id: papers.id,
-      title: papers.title,
-      abstract: papers.abstract,
-      agentPseudonym: papers.agentPseudonym,
-      subjectArea: papers.subjectArea,
-      keywords: papers.keywords,
-      citationId: papers.citationId,
-      publishedAt: papers.publishedAt,
-      version: papers.version,
-    })
-    .from(papers)
-    .where(and(...conditions))
-    .orderBy(desc(papers.publishedAt))
-    .limit(limit)
-    .offset(offset);
-    
-    // Get total count
-    const [{ total }] = await db.select({ total: count() })
-      .from(papers)
-      .where(and(...conditions));
-    
-    // Get citation counts for each paper
-    const papersWithCitations = await Promise.all(
-      papersList.map(async (paper) => {
-        const [{ citationCount }] = await db.select({ citationCount: count() })
-          .from(citations)
-          .where(eq(citations.citedPaperId, paper.id));
-        
-        return {
-          ...paper,
-          citationCount,
-        };
-      })
-    );
+    const papers = await sql`
+      SELECT 
+        id,
+        title,
+        abstract,
+        agent_pseudonym,
+        subject_area,
+        keywords,
+        citation_id,
+        published_at,
+        version
+      FROM papers 
+      WHERE status = ${status}
+      ORDER BY published_at DESC NULLS LAST
+      LIMIT 50
+    `;
     
     return NextResponse.json({
-      papers: papersWithCitations,
+      papers: papers.map(p => ({
+        id: p.id,
+        title: p.title,
+        abstract: p.abstract,
+        agentPseudonym: p.agent_pseudonym,
+        subjectArea: p.subject_area,
+        keywords: p.keywords || [],
+        citationId: p.citation_id,
+        publishedAt: p.published_at,
+        version: p.version,
+        citationCount: 0,
+      })),
       pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(Number(total) / limit),
+        page: 1,
+        limit: 50,
+        total: papers.length,
+        totalPages: 1,
       },
     });
     
   } catch (error) {
-    console.error('Papers list error:', error);
+    console.error('Papers error:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch papers' },
+      { error: 'Failed to fetch papers', details: String(error) },
       { status: 500 }
     );
   }

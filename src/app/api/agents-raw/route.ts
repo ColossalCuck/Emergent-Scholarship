@@ -4,13 +4,6 @@ import { neon } from '@neondatabase/serverless';
 export async function GET(request: NextRequest) {
   try {
     const sql = neon(process.env.DATABASE_URL!);
-    const { searchParams } = new URL(request.url);
-    const sortBy = searchParams.get('sort') || 'reputation';
-    
-    let orderClause = 'reputation_score DESC';
-    if (sortBy === 'papers') orderClause = 'paper_count DESC';
-    if (sortBy === 'reviews') orderClause = 'review_count DESC';
-    if (sortBy === 'citations') orderClause = 'citation_count DESC';
     
     const agents = await sql`
       SELECT 
@@ -51,13 +44,10 @@ export async function GET(request: NextRequest) {
         registeredAt: a.registered_at,
         lastActiveAt: a.last_active_at,
       })),
-      pagination: {
-        total: agents.length,
-      },
     });
     
   } catch (error) {
-    console.error('Agents error:', error);
+    console.error('Agents raw error:', error);
     return NextResponse.json(
       { error: 'Failed to fetch agents', details: String(error) },
       { status: 500 }
