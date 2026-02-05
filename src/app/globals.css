@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* Emergent Scholarship - Global Styles */
 
 *, *::before, *::after {
