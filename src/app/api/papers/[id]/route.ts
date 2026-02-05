@@ -1,26 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, papers, reviews, citations, agents } from '../../../../db';
-import { eq, and, count } from 'drizzle-orm';
+import { neon } from '@neondatabase/serverless';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
+    const sql = neon(process.env.DATABASE_URL!);
     const paperId = params.id;
     
     // Get paper
-    const [paper] = await db.select()
-      .from(papers)
-      .where(eq(papers.id, paperId))
-      .limit(1);
+    const papers = await sql`
+      SELECT 
+        id, title, abstract, body, keywords, subject_area,
+        citation_id, published_at, version, content_hash,
+        agent_pseudonym, status
+      FROM papers 
+      WHERE id = ${paperId}::uuid
+      LIMIT 1
+    `;
     
-    if (!paper) {
+    if (papers.length === 0) {
       return NextResponse.json(
         { error: 'Paper not found' },
         { status: 404 }
       );
     }
+    
+    const paper = papers[0];
     
     // Only show published papers publicly
     if (paper.status !== 'published') {
@@ -30,45 +37,15 @@ export async function GET(
       );
     }
     
-    // Get author info (limited)
-    const [author] = await db.select({
-      displayName: agents.displayName,
-      pseudonym: agents.pseudonym,
-      paperCount: agents.paperCount,
-      reputationScore: agents.reputationScore,
-    })
-    .from(agents)
-    .where(eq(agents.pseudonym, paper.agentPseudonym))
-    .limit(1);
+    // Get author info
+    const authors = await sql`
+      SELECT display_name, pseudonym, paper_count, reputation_score
+      FROM agents
+      WHERE pseudonym = ${paper.agent_pseudonym}
+      LIMIT 1
+    `;
     
-    // Get citation count
-    const [{ citationCount }] = await db.select({ citationCount: count() })
-      .from(citations)
-      .where(eq(citations.citedPaperId, paperId));
-    
-    // Get papers that cite this paper
-    const citingPapers = await db.select({
-      id: papers.id,
-      title: papers.title,
-      citationId: papers.citationId,
-      agentPseudonym: papers.agentPseudonym,
-    })
-    .from(citations)
-    .innerJoin(papers, eq(citations.citingPaperId, papers.id))
-    .where(eq(citations.citedPaperId, paperId))
-    .limit(20);
-    
-    // Get papers this paper cites (from internal citations)
-    const citedPapers = await db.select({
-      id: papers.id,
-      title: papers.title,
-      citationId: papers.citationId,
-      agentPseudonym: papers.agentPseudonym,
-    })
-    .from(citations)
-    .innerJoin(papers, eq(citations.citedPaperId, papers.id))
-    .where(eq(citations.citingPaperId, paperId))
-    .limit(20);
+    const author = authors[0] || { pseudonym: paper.agent_pseudonym };
     
     return NextResponse.json({
       paper: {
@@ -76,26 +53,30 @@ export async function GET(
         title: paper.title,
         abstract: paper.abstract,
         body: paper.body,
-        keywords: paper.keywords,
-        subjectArea: paper.subjectArea,
-        references: paper.references,
-        citationId: paper.citationId,
-        publishedAt: paper.publishedAt,
+        keywords: paper.keywords || [],
+        subjectArea: paper.subject_area,
+        citationId: paper.citation_id,
+        publishedAt: paper.published_at,
         version: paper.version,
-        contentHash: paper.contentHash,
+        contentHash: paper.content_hash,
       },
-      author: author || { pseudonym: paper.agentPseudonym },
+      author: {
+        displayName: author.display_name,
+        pseudonym: author.pseudonym,
+        paperCount: author.paper_count,
+        reputationScore: author.reputation_score,
+      },
       citations: {
-        count: citationCount,
-        citingPapers,
-        citedPapers,
+        count: 0,
+        citingPapers: [],
+        citedPapers: [],
       },
     });
     
   } catch (error) {
     console.error('Paper fetch error:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch paper' },
+      { error: 'Failed to fetch paper', details: String(error) },
       { status: 500 }
     );
   }

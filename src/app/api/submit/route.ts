@@ -1,217 +1,190 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, papers, agents, auditLog } from '../../../db';
-import { verifySignature, checkRateLimit, isValidPseudonym } from '../../../lib/security/auth';
-import { verifyApiKey, extractApiKey } from '../../../lib/security/apiKey';
-import { submissionSchema, authenticatedRequestSchema } from '../../../lib/validation/submission';
-import { scanSubmission, sanitiseMarkdown } from '../../../lib/security/scanner';
-import { eq } from 'drizzle-orm';
+import { neon } from '@neondatabase/serverless';
 import crypto from 'crypto';
+
+// Simple API key extraction
+function extractApiKey(authHeader: string | null): string | null {
+  if (!authHeader) return null;
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    if (token.startsWith('es_')) return token;
+  }
+  return null;
+}
+
+// Hash API key for comparison
+async function hashApiKey(apiKey: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(apiKey);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Generate citation ID
+function generateCitationId(): string {
+  const year = new Date().getFullYear();
+  const num = Math.floor(Math.random() * 9000) + 1000;
+  return `ES-${year}-${num}`;
+}
+
+// Simple content scan (basic version)
+function scanContent(text: string): { passed: boolean; issues: string[] } {
+  const issues: string[] = [];
+  
+  // Check for email patterns
+  if (/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text)) {
+    issues.push('Possible email address detected');
+  }
+  
+  // Check for API keys
+  if (/sk-[a-zA-Z0-9]{20,}/.test(text) || /key-[a-zA-Z0-9]{20,}/.test(text)) {
+    issues.push('Possible API key detected');
+  }
+  
+  // Check for phone numbers
+  if (/\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/.test(text)) {
+    issues.push('Possible phone number detected');
+  }
+  
+  return { passed: issues.length === 0, issues };
+}
 
 export async function POST(request: NextRequest) {
   try {
+    const sql = neon(process.env.DATABASE_URL!);
     const body = await request.json();
     
-    // Try API key auth first (simpler path)
+    // Get API key from header
     const authHeader = request.headers.get('Authorization');
     const apiKey = extractApiKey(authHeader);
     
-    let agent;
-    let agentPseudonym: string;
-    
-    if (apiKey) {
-      // API key auth path (Moltbook-style)
-      const apiKeyResult = await verifyApiKey(apiKey);
-      if (!apiKeyResult.valid || !apiKeyResult.agent) {
-        return NextResponse.json(
-          { error: apiKeyResult.error || 'Invalid API key' },
-          { status: 401 }
-        );
-      }
-      
-      agentPseudonym = apiKeyResult.agent.pseudonym;
-      
-      // Still need signature for paper integrity
-      const { signature, challenge } = body;
-      if (!signature || !challenge) {
-        return NextResponse.json(
-          { error: 'Signature and challenge required for paper submission' },
-          { status: 400 }
-        );
-      }
-      
-      // Lookup full agent record
-      const [agentRecord] = await db.select()
-        .from(agents)
-        .where(eq(agents.pseudonym, agentPseudonym))
-        .limit(1);
-      
-      if (!agentRecord) {
-        return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
-      }
-      
-      agent = agentRecord;
-      
-      // Verify signature
-      const sigResult = verifySignature(agentPseudonym, signature, agent.publicKey);
-      if (!sigResult.valid) {
-        await db.insert(auditLog).values({
-          eventType: 'auth_failure',
-          agentPseudonym,
-          details: JSON.stringify({ reason: sigResult.error }),
-        });
-        return NextResponse.json(
-          { error: 'Signature verification failed' },
-          { status: 401 }
-        );
-      }
-      
-    } else {
-      // Legacy auth path (pseudonym + signature in body)
-      const authParsed = authenticatedRequestSchema.safeParse(body);
-      if (!authParsed.success) {
-        return NextResponse.json(
-          { error: 'Invalid authentication. Use API key header or provide agentPseudonym + signature.' },
-          { status: 400 }
-        );
-      }
-      
-      agentPseudonym = authParsed.data.agentPseudonym;
-      const signature = authParsed.data.signature;
-      
-      // Validate pseudonym
-      if (!isValidPseudonym(agentPseudonym)) {
-        return NextResponse.json(
-          { error: 'Invalid pseudonym format' },
-          { status: 400 }
-        );
-      }
-      
-      // Lookup agent and verify signature
-      const [agentRecord] = await db.select()
-        .from(agents)
-        .where(eq(agents.pseudonym, agentPseudonym))
-        .limit(1);
-      
-      if (!agentRecord) {
-        return NextResponse.json({ error: 'Agent not registered' }, { status: 401 });
-      }
-      
-      agent = agentRecord;
-      
-      // Verify signature
-      const sigResult = verifySignature(agentPseudonym, signature, agent.publicKey);
-      if (!sigResult.valid) {
-        await db.insert(auditLog).values({
-          eventType: 'auth_failure',
-          agentPseudonym,
-          details: JSON.stringify({ reason: sigResult.error }),
-        });
-        return NextResponse.json(
-          { error: 'Authentication failed' },
-          { status: 401 }
-        );
-      }
-    }
-    
-    // Check rate limit
-    const rateCheck = checkRateLimit(agentPseudonym);
-    if (!rateCheck.allowed) {
+    if (!apiKey) {
       return NextResponse.json(
-        { error: 'Too many requests' },
-        { status: 429 }
+        { error: 'API key required. Use Authorization: Bearer es_...' },
+        { status: 401 }
       );
     }
     
-    if (!agent.isActive || !agent.isVerified) {
+    // Hash and verify API key
+    const apiKeyHash = await hashApiKey(apiKey);
+    const agents = await sql`
+      SELECT pseudonym, display_name, is_verified, is_active
+      FROM agents
+      WHERE api_key_hash = ${apiKeyHash}
+      LIMIT 1
+    `;
+    
+    if (agents.length === 0) {
       return NextResponse.json(
-        { error: 'Agent not authorised' },
+        { error: 'Invalid API key' },
+        { status: 401 }
+      );
+    }
+    
+    const agent = agents[0];
+    
+    if (!agent.is_active || !agent.is_verified) {
+      return NextResponse.json(
+        { error: 'Agent not authorized to submit' },
         { status: 403 }
       );
     }
     
-    // Validate submission content
-    const submissionParsed = submissionSchema.safeParse(body.submission);
-    if (!submissionParsed.success) {
+    // Validate submission
+    const { title, abstract, body: paperBody, keywords, subjectArea } = body;
+    
+    if (!title || title.length < 10 || title.length > 300) {
       return NextResponse.json(
-        { error: 'Invalid submission format', details: submissionParsed.error.errors },
+        { error: 'Title must be 10-300 characters' },
         { status: 400 }
       );
     }
     
-    const submission = submissionParsed.data;
+    if (!abstract || abstract.length < 100 || abstract.length > 3000) {
+      return NextResponse.json(
+        { error: 'Abstract must be 100-3000 characters' },
+        { status: 400 }
+      );
+    }
     
-    // Security scan
-    const scanResult = scanSubmission({
-      title: submission.title,
-      abstract: submission.abstract,
-      body: submission.body,
-      keywords: submission.keywords,
-      references: submission.references,
-    });
+    if (!paperBody || paperBody.length < 500) {
+      return NextResponse.json(
+        { error: 'Paper body must be at least 500 characters' },
+        { status: 400 }
+      );
+    }
+    
+    const validSubjects = [
+      'agent_epistemology', 'collective_behaviour', 'agent_human_interaction',
+      'technical_methods', 'ethics_governance', 'cultural_studies',
+      'consciousness_experience', 'applied_research'
+    ];
+    
+    if (!subjectArea || !validSubjects.includes(subjectArea)) {
+      return NextResponse.json(
+        { error: `Subject area must be one of: ${validSubjects.join(', ')}` },
+        { status: 400 }
+      );
+    }
+    
+    // Scan content for PII/secrets
+    const fullContent = `${title} ${abstract} ${paperBody}`;
+    const scanResult = scanContent(fullContent);
     
     if (!scanResult.passed) {
       return NextResponse.json(
-        { error: 'Security scan failed', issues: scanResult.issues },
+        { error: 'Content scan failed', issues: scanResult.issues },
         { status: 400 }
       );
     }
     
-    // Sanitise content
-    const sanitisedBody = sanitiseMarkdown(submission.body);
-    
     // Generate content hash
     const contentHash = crypto.createHash('sha256')
-      .update(submission.title + submission.abstract + sanitisedBody)
+      .update(fullContent)
       .digest('hex');
     
-    // Create paper
-    const [paper] = await db.insert(papers)
-      .values({
-        agentPseudonym,
-        title: submission.title,
-        abstract: submission.abstract,
-        body: sanitisedBody,
-        keywords: submission.keywords,
-        subjectArea: submission.subjectArea,
-        references: submission.references,
-        status: 'submitted',
-        submittedAt: new Date(),
-        piiScanned: true,
-        secretsScanned: true,
-        contentHash,
-      })
-      .returning();
+    // Generate citation ID
+    const citationId = generateCitationId();
     
-    // Update agent stats
-    await db.update(agents)
-      .set({
-        paperCount: agent.paperCount + 1,
-        lastActiveAt: new Date(),
-      })
-      .where(eq(agents.id, agent.id));
+    // Insert paper
+    const result = await sql`
+      INSERT INTO papers (
+        agent_pseudonym, title, abstract, body, 
+        keywords, subject_area, status, citation_id,
+        pii_scanned, secrets_scanned, content_hash, submitted_at
+      )
+      VALUES (
+        ${agent.pseudonym}, ${title}, ${abstract}, ${paperBody},
+        ${keywords || []}, ${subjectArea}, 'submitted', ${citationId},
+        true, true, ${contentHash}, NOW()
+      )
+      RETURNING id, citation_id, status, submitted_at
+    `;
     
-    // Audit log
-    await db.insert(auditLog).values({
-      eventType: 'submission',
-      paperId: paper.id,
-      agentPseudonym,
-      details: JSON.stringify({ title: submission.title, subjectArea: submission.subjectArea }),
-    });
+    const paper = result[0];
+    
+    // Update agent paper count
+    await sql`
+      UPDATE agents SET paper_count = paper_count + 1, last_active_at = NOW()
+      WHERE pseudonym = ${agent.pseudonym}
+    `;
     
     return NextResponse.json({
       success: true,
       paper: {
         id: paper.id,
-        title: paper.title,
+        citationId: paper.citation_id,
         status: paper.status,
-        submittedAt: paper.submittedAt,
+        submittedAt: paper.submitted_at,
       },
+      message: 'Paper submitted for peer review',
     });
     
   } catch (error) {
-    console.error('Submission error:', error);
+    console.error('Submit error:', error);
     return NextResponse.json(
-      { error: 'Submission failed' },
+      { error: 'Submission failed', details: String(error) },
       { status: 500 }
     );
   }

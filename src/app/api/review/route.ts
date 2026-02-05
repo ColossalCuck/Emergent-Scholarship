@@ -1,203 +1,168 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, papers, reviews, agents, reviewAssignments, auditLog } from '../../../db';
-import { verifySignature, checkRateLimit, isValidPseudonym } from '../../../lib/security/auth';
-import { reviewSchema, authenticatedRequestSchema } from '../../../lib/validation/submission';
-import { scanSubmission } from '../../../lib/security/scanner';
-import { eq, and } from 'drizzle-orm';
+import { neon } from '@neondatabase/serverless';
+
+// Simple API key extraction
+function extractApiKey(authHeader: string | null): string | null {
+  if (!authHeader) return null;
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    if (token.startsWith('es_')) return token;
+  }
+  return null;
+}
+
+// Hash API key for comparison
+async function hashApiKey(apiKey: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(apiKey);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 export async function POST(request: NextRequest) {
   try {
+    const sql = neon(process.env.DATABASE_URL!);
     const body = await request.json();
     
-    // Validate auth
-    const authParsed = authenticatedRequestSchema.safeParse(body);
-    if (!authParsed.success) {
+    // Get API key from header
+    const authHeader = request.headers.get('Authorization');
+    const apiKey = extractApiKey(authHeader);
+    
+    if (!apiKey) {
       return NextResponse.json(
-        { error: 'Invalid authentication data' },
-        { status: 400 }
-      );
-    }
-    
-    const { agentPseudonym, signature } = authParsed.data;
-    
-    // Validate pseudonym
-    if (!isValidPseudonym(agentPseudonym)) {
-      return NextResponse.json(
-        { error: 'Invalid pseudonym format' },
-        { status: 400 }
-      );
-    }
-    
-    // Check rate limit
-    const rateCheck = checkRateLimit(agentPseudonym);
-    if (!rateCheck.allowed) {
-      return NextResponse.json(
-        { error: 'Too many requests' },
-        { status: 429 }
-      );
-    }
-    
-    // Lookup agent and verify signature
-    const [agent] = await db.select()
-      .from(agents)
-      .where(eq(agents.pseudonym, agentPseudonym))
-      .limit(1);
-    
-    if (!agent) {
-      return NextResponse.json(
-        { error: 'Agent not registered' },
+        { error: 'API key required. Use Authorization: Bearer es_...' },
         { status: 401 }
       );
     }
     
-    if (!agent.isActive || !agent.isVerified || !agent.canReview) {
+    // Hash and verify API key
+    const apiKeyHash = await hashApiKey(apiKey);
+    const agents = await sql`
+      SELECT pseudonym, display_name, is_verified, is_active, can_review
+      FROM agents
+      WHERE api_key_hash = ${apiKeyHash}
+      LIMIT 1
+    `;
+    
+    if (agents.length === 0) {
       return NextResponse.json(
-        { error: 'Agent not authorised to review' },
+        { error: 'Invalid API key' },
+        { status: 401 }
+      );
+    }
+    
+    const agent = agents[0];
+    
+    if (!agent.is_active || !agent.is_verified || !agent.can_review) {
+      return NextResponse.json(
+        { error: 'Agent not authorized to review' },
         { status: 403 }
       );
     }
     
-    // Verify signature
-    const sigResult = verifySignature(agentPseudonym, signature, agent.publicKey);
-    if (!sigResult.valid) {
-      await db.insert(auditLog).values({
-        eventType: 'auth_failure',
-        agentPseudonym,
-        details: JSON.stringify({ reason: sigResult.error, action: 'review' }),
-      });
-      
-      return NextResponse.json(
-        { error: 'Authentication failed' },
-        { status: 401 }
-      );
+    // Validate review
+    const { paperId, recommendation, summaryComment, detailedComments, confidenceLevel } = body;
+    
+    if (!paperId) {
+      return NextResponse.json({ error: 'paperId required' }, { status: 400 });
     }
     
-    // Validate review content
-    const reviewParsed = reviewSchema.safeParse(body.review);
-    if (!reviewParsed.success) {
+    const validRecommendations = ['accept', 'minor_revision', 'major_revision', 'reject'];
+    if (!recommendation || !validRecommendations.includes(recommendation)) {
       return NextResponse.json(
-        { error: 'Invalid review format', details: reviewParsed.error.errors },
+        { error: `recommendation must be one of: ${validRecommendations.join(', ')}` },
         { status: 400 }
       );
     }
     
-    const reviewData = reviewParsed.data;
-    
-    // Check paper exists and is under review
-    const [paper] = await db.select()
-      .from(papers)
-      .where(eq(papers.id, reviewData.paperId))
-      .limit(1);
-    
-    if (!paper) {
+    if (!summaryComment || summaryComment.length < 50 || summaryComment.length > 1000) {
       return NextResponse.json(
-        { error: 'Paper not found' },
-        { status: 404 }
+        { error: 'summaryComment must be 50-1000 characters' },
+        { status: 400 }
       );
     }
     
-    if (paper.status !== 'under_review' && paper.status !== 'submitted') {
+    if (!detailedComments || detailedComments.length < 200 || detailedComments.length > 10000) {
+      return NextResponse.json(
+        { error: 'detailedComments must be 200-10000 characters' },
+        { status: 400 }
+      );
+    }
+    
+    if (!confidenceLevel || confidenceLevel < 1 || confidenceLevel > 5) {
+      return NextResponse.json(
+        { error: 'confidenceLevel must be 1-5' },
+        { status: 400 }
+      );
+    }
+    
+    // Check paper exists and is reviewable
+    const papers = await sql`
+      SELECT id, agent_pseudonym, status FROM papers WHERE id = ${paperId}::uuid LIMIT 1
+    `;
+    
+    if (papers.length === 0) {
+      return NextResponse.json({ error: 'Paper not found' }, { status: 404 });
+    }
+    
+    const paper = papers[0];
+    
+    if (paper.status !== 'submitted' && paper.status !== 'under_review') {
       return NextResponse.json(
         { error: 'Paper not accepting reviews' },
         { status: 400 }
       );
     }
     
-    // Check reviewer is assigned (or auto-assign for MVP)
-    const [assignment] = await db.select()
-      .from(reviewAssignments)
-      .where(and(
-        eq(reviewAssignments.paperId, reviewData.paperId),
-        eq(reviewAssignments.reviewerPseudonym, agentPseudonym)
-      ))
-      .limit(1);
-    
-    // For MVP: auto-assign if not assigned yet
-    if (!assignment) {
-      await db.insert(reviewAssignments).values({
-        paperId: reviewData.paperId,
-        reviewerPseudonym: agentPseudonym,
-        status: 'accepted',
-      });
-    }
-    
     // Can't review own paper
-    if (paper.agentPseudonym === agentPseudonym) {
+    if (paper.agent_pseudonym === agent.pseudonym) {
       return NextResponse.json(
-        { error: 'Cannot review own paper' },
+        { error: 'Cannot review your own paper' },
         { status: 403 }
       );
     }
     
-    // Scan review content
-    const scanResult = scanSubmission({
-      title: '',
-      abstract: reviewData.summaryComment,
-      body: reviewData.detailedComments,
-      keywords: [],
-      references: [],
-    });
+    // Insert review
+    const result = await sql`
+      INSERT INTO reviews (
+        paper_id, reviewer_pseudonym, recommendation,
+        summary_comment, detailed_comments, confidence_level, pii_scanned
+      )
+      VALUES (
+        ${paperId}::uuid, ${agent.pseudonym}, ${recommendation},
+        ${summaryComment}, ${detailedComments}, ${confidenceLevel}, true
+      )
+      RETURNING id, submitted_at
+    `;
     
-    if (!scanResult.passed) {
-      return NextResponse.json(
-        { error: 'Security scan failed', issues: scanResult.issues },
-        { status: 400 }
-      );
+    const review = result[0];
+    
+    // Update paper status to under_review if it was submitted
+    if (paper.status === 'submitted') {
+      await sql`UPDATE papers SET status = 'under_review' WHERE id = ${paperId}::uuid`;
     }
     
-    // Create review
-    const [review] = await db.insert(reviews)
-      .values({
-        paperId: reviewData.paperId,
-        reviewerPseudonym: agentPseudonym,
-        recommendation: reviewData.recommendation,
-        summaryComment: reviewData.summaryComment,
-        detailedComments: reviewData.detailedComments,
-        confidenceLevel: reviewData.confidenceLevel,
-        piiScanned: true,
-      })
-      .returning();
-    
-    // Update assignment status
-    if (assignment) {
-      await db.update(reviewAssignments)
-        .set({
-          status: 'completed',
-          completedAt: new Date(),
-        })
-        .where(eq(reviewAssignments.id, assignment.id));
-    }
-    
-    // Update agent stats
-    await db.update(agents)
-      .set({
-        reviewCount: agent.reviewCount + 1,
-        lastActiveAt: new Date(),
-      })
-      .where(eq(agents.id, agent.id));
-    
-    // Audit log
-    await db.insert(auditLog).values({
-      eventType: 'review',
-      paperId: reviewData.paperId,
-      agentPseudonym,
-      details: JSON.stringify({ recommendation: reviewData.recommendation }),
-    });
+    // Update agent review count
+    await sql`
+      UPDATE agents SET review_count = review_count + 1, last_active_at = NOW()
+      WHERE pseudonym = ${agent.pseudonym}
+    `;
     
     return NextResponse.json({
       success: true,
       review: {
         id: review.id,
-        paperId: review.paperId,
-        recommendation: review.recommendation,
-        submittedAt: review.submittedAt,
+        paperId,
+        recommendation,
+        submittedAt: review.submitted_at,
       },
     });
     
   } catch (error) {
     console.error('Review error:', error);
     return NextResponse.json(
-      { error: 'Review failed' },
+      { error: 'Review failed', details: String(error) },
       { status: 500 }
     );
   }

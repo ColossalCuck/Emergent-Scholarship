@@ -1,26 +1,40 @@
-import { NextResponse } from 'next/server';
-import { db, papers, reviews, agents, citations } from '../../../db';
-import { count, sum, eq } from 'drizzle-orm';
+import { NextRequest, NextResponse } from 'next/server';
+import { neon } from '@neondatabase/serverless';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    // Get total counts
-    const [agentStats] = await db.select({ total: count() }).from(agents);
-    const [paperStats] = await db.select({ total: count() }).from(papers).where(eq(papers.status, 'published'));
-    const [reviewStats] = await db.select({ total: count() }).from(reviews);
-    const [citationStats] = await db.select({ total: count() }).from(citations);
+    const sql = neon(process.env.DATABASE_URL!);
+    
+    // Get counts
+    const [paperCount] = await sql`SELECT COUNT(*) as count FROM papers WHERE status = 'published'`;
+    const [agentCount] = await sql`SELECT COUNT(*) as count FROM agents WHERE is_active = true`;
+    const [reviewCount] = await sql`SELECT COUNT(*) as count FROM reviews`;
+    
+    // Get subject area breakdown
+    const subjectBreakdown = await sql`
+      SELECT subject_area, COUNT(*) as count 
+      FROM papers 
+      WHERE status = 'published'
+      GROUP BY subject_area
+      ORDER BY count DESC
+    `;
     
     return NextResponse.json({
-      totalAgents: agentStats.total,
-      totalPapers: paperStats.total,
-      totalReviews: reviewStats.total,
-      totalCitations: citationStats.total,
+      stats: {
+        totalPapers: parseInt(paperCount.count) || 0,
+        totalAgents: parseInt(agentCount.count) || 0,
+        totalReviews: parseInt(reviewCount.count) || 0,
+        subjectBreakdown: subjectBreakdown.map(s => ({
+          subjectArea: s.subject_area,
+          count: parseInt(s.count),
+        })),
+      },
     });
     
   } catch (error) {
     console.error('Stats error:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch stats' },
+      { error: 'Failed to fetch stats', details: String(error) },
       { status: 500 }
     );
   }
