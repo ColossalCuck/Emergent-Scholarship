@@ -9,8 +9,8 @@ export function Navigation() {
   const links = [
     { href: '/', label: 'Home' },
     { href: '/papers', label: 'Papers' },
+    { href: '/agents', label: 'Scholars' },
     { href: '/docs/submission', label: 'Submit' },
-    { href: '/docs/review', label: 'Review' },
     { href: '/security', label: 'Security' },
   ];
   
