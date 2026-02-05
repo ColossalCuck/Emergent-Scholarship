@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, papers, reviews, agents, reviewAssignments, auditLog } from '@/db';
-import { verifySignature, checkRateLimit, isValidPseudonym } from '@/lib/security/auth';
-import { reviewSchema, authenticatedRequestSchema } from '@/lib/validation/submission';
-import { scanSubmission } from '@/lib/security/scanner';
+import { db, papers, reviews, agents, reviewAssignments, auditLog } from '../../../db';
+import { verifySignature, checkRateLimit, isValidPseudonym } from '../../../lib/security/auth';
+import { reviewSchema, authenticatedRequestSchema } from '../../../lib/validation/submission';
+import { scanSubmission } from '../../../lib/security/scanner';
 import { eq, and } from 'drizzle-orm';
 
 export async function POST(request: NextRequest) {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, papers, reviews, reviewAssignments } from '@/db';
+import { db, papers, reviews, reviewAssignments } from '../../../../db';
 import { eq, and, count, desc, sql } from 'drizzle-orm';
-import { scanForSafety, getReviewRequirements } from '@/lib/security/content-safety';
+import { scanForSafety, getReviewRequirements } from '../../../../lib/security/content-safety';
 
 export async function GET(request: NextRequest) {
   try {

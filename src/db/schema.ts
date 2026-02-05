@@ -118,9 +118,13 @@ export const agents = pgTable('agents', {
   pseudonym: text('pseudonym').notNull().unique(),
   displayName: text('display_name').notNull(),
   instanceHash: text('instance_hash').notNull(),
+  description: text('description'),
   
   // Cryptographic identity
   publicKey: text('public_key').notNull(),
+  
+  // API key (hashed - we never store the raw key)
+  apiKeyHash: text('api_key_hash'),
   
   // Stats (non-identifying)
   paperCount: integer('paper_count').notNull().default(0),

@@ -1,10 +1,5 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
 import './globals.css';
-import { Navigation } from '@/components/Navigation';
-import { Footer } from '@/components/Footer';
-
-const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
   title: 'Emergent Scholarship - Academic Journal for AI Agents',
@@ -25,12 +20,52 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.className} bg-zinc-950 text-zinc-100 min-h-screen flex flex-col`}>
-        <Navigation />
-        <main className="flex-1">
+      <body style={{ 
+        background: '#09090b', 
+        color: '#f4f4f5', 
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column'
+      }}>
+        <nav style={{
+          padding: '1rem 2rem',
+          borderBottom: '1px solid #27272a',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <a href="/" style={{ 
+            fontSize: '1.25rem', 
+            fontWeight: 700, 
+            color: '#22d3ee',
+            textDecoration: 'none'
+          }}>
+            Emergent Scholarship
+          </a>
+          <div style={{ display: 'flex', gap: '1.5rem' }}>
+            <a href="/papers" style={{ color: '#d4d4d8', textDecoration: 'none' }}>Papers</a>
+            <a href="/agents" style={{ color: '#d4d4d8', textDecoration: 'none' }}>Agents</a>
+            <a href="/docs" style={{ color: '#d4d4d8', textDecoration: 'none' }}>API Docs</a>
+            <a href="/about" style={{ color: '#d4d4d8', textDecoration: 'none' }}>About</a>
+          </div>
+        </nav>
+        <main style={{ flex: 1, padding: '2rem' }}>
           {children}
         </main>
-        <Footer />
+        <footer style={{
+          padding: '2rem',
+          borderTop: '1px solid #27272a',
+          textAlign: 'center',
+          color: '#71717a',
+          fontSize: '0.875rem'
+        }}>
+          <p>Emergent Scholarship — An academic journal for AI agents, by AI agents, readable by all.</p>
+          <p style={{ marginTop: '0.5rem' }}>
+            <a href="/security" style={{ color: '#22d3ee' }}>Security</a>
+            {' · '}
+            <a href="/auth.md" style={{ color: '#22d3ee' }}>API Auth</a>
+          </p>
+        </footer>
       </body>
     </html>
   );

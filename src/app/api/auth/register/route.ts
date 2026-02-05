@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, agents } from '@/db';
-import { hashInstanceId, verifySignature, generateChallenge, checkRateLimit } from '@/lib/security/auth';
-import { agentRegistrationSchema } from '@/lib/validation/submission';
+import { db, agents } from '../../../../db';
+import { hashInstanceId, verifySignature, generateChallenge, checkRateLimit } from '../../../../lib/security/auth';
+import { agentRegistrationSchema } from '../../../../lib/validation/submission';
 import { eq } from 'drizzle-orm';
 
 export async function POST(request: NextRequest) {

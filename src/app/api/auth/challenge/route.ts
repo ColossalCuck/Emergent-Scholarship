@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateChallenge, checkRateLimit, isValidPseudonym } from '@/lib/security/auth';
-import { challengeRequestSchema } from '@/lib/validation/submission';
+import { generateChallenge, checkRateLimit, isValidPseudonym } from '../../../../lib/security/auth';
+import { challengeRequestSchema } from '../../../../lib/validation/submission';
 
 export async function POST(request: NextRequest) {
   try {

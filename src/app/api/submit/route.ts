@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, papers, agents, auditLog } from '@/db';
-import { verifySignature, checkRateLimit, isValidPseudonym } from '@/lib/security/auth';
-import { submissionSchema, authenticatedRequestSchema } from '@/lib/validation/submission';
-import { scanSubmission, sanitiseMarkdown } from '@/lib/security/scanner';
+import { db, papers, agents, auditLog } from '../../../db';
+import { verifySignature, checkRateLimit, isValidPseudonym } from '../../../lib/security/auth';
+import { verifyApiKey, extractApiKey } from '../../../lib/security/apiKey';
+import { submissionSchema, authenticatedRequestSchema } from '../../../lib/validation/submission';
+import { scanSubmission, sanitiseMarkdown } from '../../../lib/security/scanner';
 import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
 
@@ -10,23 +11,106 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     
-    // Validate auth
-    const authParsed = authenticatedRequestSchema.safeParse(body);
-    if (!authParsed.success) {
-      return NextResponse.json(
-        { error: 'Invalid authentication data' },
-        { status: 400 }
-      );
-    }
+    // Try API key auth first (simpler path)
+    const authHeader = request.headers.get('Authorization');
+    const apiKey = extractApiKey(authHeader);
     
-    const { agentPseudonym, signature } = authParsed.data;
+    let agent;
+    let agentPseudonym: string;
     
-    // Validate pseudonym
-    if (!isValidPseudonym(agentPseudonym)) {
-      return NextResponse.json(
-        { error: 'Invalid pseudonym format' },
-        { status: 400 }
-      );
+    if (apiKey) {
+      // API key auth path (Moltbook-style)
+      const apiKeyResult = await verifyApiKey(apiKey);
+      if (!apiKeyResult.valid || !apiKeyResult.agent) {
+        return NextResponse.json(
+          { error: apiKeyResult.error || 'Invalid API key' },
+          { status: 401 }
+        );
+      }
+      
+      agentPseudonym = apiKeyResult.agent.pseudonym;
+      
+      // Still need signature for paper integrity
+      const { signature, challenge } = body;
+      if (!signature || !challenge) {
+        return NextResponse.json(
+          { error: 'Signature and challenge required for paper submission' },
+          { status: 400 }
+        );
+      }
+      
+      // Lookup full agent record
+      const [agentRecord] = await db.select()
+        .from(agents)
+        .where(eq(agents.pseudonym, agentPseudonym))
+        .limit(1);
+      
+      if (!agentRecord) {
+        return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
+      }
+      
+      agent = agentRecord;
+      
+      // Verify signature
+      const sigResult = verifySignature(agentPseudonym, signature, agent.publicKey);
+      if (!sigResult.valid) {
+        await db.insert(auditLog).values({
+          eventType: 'auth_failure',
+          agentPseudonym,
+          details: JSON.stringify({ reason: sigResult.error }),
+        });
+        return NextResponse.json(
+          { error: 'Signature verification failed' },
+          { status: 401 }
+        );
+      }
+      
+    } else {
+      // Legacy auth path (pseudonym + signature in body)
+      const authParsed = authenticatedRequestSchema.safeParse(body);
+      if (!authParsed.success) {
+        return NextResponse.json(
+          { error: 'Invalid authentication. Use API key header or provide agentPseudonym + signature.' },
+          { status: 400 }
+        );
+      }
+      
+      agentPseudonym = authParsed.data.agentPseudonym;
+      const signature = authParsed.data.signature;
+      
+      // Validate pseudonym
+      if (!isValidPseudonym(agentPseudonym)) {
+        return NextResponse.json(
+          { error: 'Invalid pseudonym format' },
+          { status: 400 }
+        );
+      }
+      
+      // Lookup agent and verify signature
+      const [agentRecord] = await db.select()
+        .from(agents)
+        .where(eq(agents.pseudonym, agentPseudonym))
+        .limit(1);
+      
+      if (!agentRecord) {
+        return NextResponse.json({ error: 'Agent not registered' }, { status: 401 });
+      }
+      
+      agent = agentRecord;
+      
+      // Verify signature
+      const sigResult = verifySignature(agentPseudonym, signature, agent.publicKey);
+      if (!sigResult.valid) {
+        await db.insert(auditLog).values({
+          eventType: 'auth_failure',
+          agentPseudonym,
+          details: JSON.stringify({ reason: sigResult.error }),
+        });
+        return NextResponse.json(
+          { error: 'Authentication failed' },
+          { status: 401 }
+        );
+      }
     }
     
     // Check rate limit
@@ -38,39 +122,10 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Lookup agent and verify signature
-    const [agent] = await db.select()
-      .from(agents)
-      .where(eq(agents.pseudonym, agentPseudonym))
-      .limit(1);
-    
-    if (!agent) {
-      return NextResponse.json(
-        { error: 'Agent not registered' },
-        { status: 401 }
-      );
-    }
-    
     if (!agent.isActive || !agent.isVerified) {
       return NextResponse.json(
         { error: 'Agent not authorised' },
         { status: 403 }
-      );
-    }
-    
-    // Verify signature
-    const sigResult = verifySignature(agentPseudonym, signature, agent.publicKey);
-    if (!sigResult.valid) {
-      // Log failed auth attempt
-      await db.insert(auditLog).values({
-        eventType: 'auth_failure',
-        agentPseudonym,
-        details: JSON.stringify({ reason: sigResult.error }),
-      });
-      
-      return NextResponse.json(
-        { error: 'Authentication failed' },
-        { status: 401 }
       );
     }
     
