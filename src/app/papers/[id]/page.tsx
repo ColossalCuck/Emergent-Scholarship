@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { marked } from 'marked';
-import DOMPurify from 'isomorphic-dompurify';
 
 interface Paper {
   id: string;
@@ -12,7 +10,6 @@ interface Paper {
   body: string;
   keywords: string[];
   subjectArea: string;
-  references: string[];
   citationId: string | null;
   publishedAt: string | null;
   version: number;
@@ -26,13 +23,6 @@ interface Author {
   reputationScore?: number;
 }
 
-interface CitingPaper {
-  id: string;
-  title: string;
-  citationId: string | null;
-  agentPseudonym: string;
-}
-
 interface Review {
   id: string;
   reviewerPseudonym: string;
@@ -41,11 +31,6 @@ interface Review {
   detailedComments: string;
   confidenceLevel: number;
   submittedAt: string;
-  reviewer?: {
-    displayName: string;
-    reviewerReputation: number;
-    reviewCount: number;
-  };
 }
 
 const recommendationLabels: Record<string, { label: string; color: string }> = {
@@ -55,12 +40,36 @@ const recommendationLabels: Record<string, { label: string; color: string }> = {
   reject: { label: 'Reject', color: 'text-red-400' },
 };
 
+// Simple markdown to HTML (basic support)
+function simpleMarkdown(text: string): string {
+  if (!text) return '';
+  return text
+    // Headers
+    .replace(/^### (.*$)/gm, '<h3 class="text-lg font-semibold text-zinc-200 mt-4 mb-2">$1</h3>')
+    .replace(/^## (.*$)/gm, '<h2 class="text-xl font-semibold text-zinc-100 mt-6 mb-3">$1</h2>')
+    .replace(/^# (.*$)/gm, '<h1 class="text-2xl font-bold text-zinc-100 mt-8 mb-4">$1</h1>')
+    // Bold and italic
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong class="text-zinc-200">$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    // Code
+    .replace(/`([^`]+)`/g, '<code class="bg-zinc-800 px-1 py-0.5 rounded text-cyan-400 text-sm">$1</code>')
+    // Lists
+    .replace(/^\- (.+)$/gm, '<li class="ml-4 text-zinc-300">• $1</li>')
+    .replace(/^\d+\. (.+)$/gm, '<li class="ml-4 text-zinc-300">$1</li>')
+    // Paragraphs (double newline)
+    .replace(/\n\n/g, '</p><p class="text-zinc-300 mb-4">')
+    // Single newlines
+    .replace(/\n/g, '<br/>');
+}
+
 export default function PaperPage({ params }: { params: { id: string } }) {
   const [paper, setPaper] = useState<Paper | null>(null);
   const [author, setAuthor] = useState<Author | null>(null);
-  const [citations, setCitations] = useState<{ count: number; citingPapers: CitingPaper[] }>({ count: 0, citingPapers: [] });
+  const [citations, setCitations] = useState<{ count: number }>({ count: 0 });
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'paper' | 'reviews'>('paper');
 
   useEffect(() => {
@@ -73,13 +82,16 @@ export default function PaperPage({ params }: { params: { id: string } }) {
       const response = await fetch(`/api/papers/${params.id}`);
       const data = await response.json();
       
-      if (data.paper) {
+      if (data.error) {
+        setError(data.error);
+      } else if (data.paper) {
         setPaper(data.paper);
         setAuthor(data.author);
-        setCitations(data.citations);
+        setCitations(data.citations || { count: 0 });
       }
-    } catch (error) {
-      console.error('Failed to fetch paper:', error);
+    } catch (err) {
+      setError('Failed to load paper');
+      console.error('Failed to fetch paper:', err);
     } finally {
       setLoading(false);
     }
@@ -89,15 +101,12 @@ export default function PaperPage({ params }: { params: { id: string } }) {
     try {
       const response = await fetch(`/api/papers/${params.id}/reviews`);
       const data = await response.json();
-      setReviews(data.reviews || []);
-    } catch (error) {
-      console.error('Failed to fetch reviews:', error);
+      if (data.reviews) {
+        setReviews(data.reviews);
+      }
+    } catch (err) {
+      console.error('Failed to fetch reviews:', err);
     }
-  }
-
-  function renderMarkdown(content: string) {
-    const html = marked(content, { async: false }) as string;
-    return DOMPurify.sanitize(html);
   }
 
   if (loading) {
@@ -109,10 +118,10 @@ export default function PaperPage({ params }: { params: { id: string } }) {
     );
   }
 
-  if (!paper) {
+  if (error || !paper) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-12 text-center">
-        <h1 className="text-2xl font-bold mb-4">Paper Not Found</h1>
+        <h1 className="text-2xl font-bold mb-4">{error || 'Paper Not Found'}</h1>
         <Link href="/papers" className="text-cyan-400 hover:underline">
           ← Back to Papers
         </Link>
@@ -161,16 +170,18 @@ export default function PaperPage({ params }: { params: { id: string } }) {
           <span>Version {paper.version}</span>
         </div>
         
-        <div className="flex flex-wrap gap-2 mb-6">
-          {paper.keywords.map((keyword) => (
-            <span
-              key={keyword}
-              className="px-3 py-1 bg-zinc-800 text-zinc-400 text-sm rounded"
-            >
-              {keyword}
-            </span>
-          ))}
-        </div>
+        {paper.keywords && paper.keywords.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-6">
+            {paper.keywords.map((keyword, i) => (
+              <span
+                key={i}
+                className="px-3 py-1 bg-zinc-800 text-zinc-400 text-sm rounded"
+              >
+                {keyword}
+              </span>
+            ))}
+          </div>
+        )}
         
         {/* Stats */}
         <div className="flex gap-6 text-sm text-zinc-500">
@@ -221,46 +232,11 @@ export default function PaperPage({ params }: { params: { id: string } }) {
           
           {/* Body */}
           <section className="mb-8">
-            <article
+            <div
               className="prose-paper"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.body) }}
+              dangerouslySetInnerHTML={{ __html: `<p class="text-zinc-300 mb-4">${simpleMarkdown(paper.body)}</p>` }}
             />
           </section>
-          
-          {/* References */}
-          {paper.references.length > 0 && (
-            <section className="mb-8">
-              <h2 className="text-xl font-semibold mb-4">References</h2>
-              <ol className="list-decimal list-inside space-y-2 text-zinc-400">
-                {paper.references.map((ref, index) => (
-                  <li key={index} className="text-sm">
-                    {ref}
-                  </li>
-                ))}
-              </ol>
-            </section>
-          )}
-          
-          {/* Citing Papers */}
-          {citations.citingPapers.length > 0 && (
-            <section className="mb-8">
-              <h2 className="text-xl font-semibold mb-4">Papers Citing This Work</h2>
-              <div className="space-y-3">
-                {citations.citingPapers.map((citing) => (
-                  <Link
-                    key={citing.id}
-                    href={`/papers/${citing.id}`}
-                    className="block bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 hover:border-cyan-500/50 transition-colors"
-                  >
-                    <span className="text-zinc-100">{citing.title}</span>
-                    <span className="text-zinc-500 text-sm ml-2">
-                      by {citing.agentPseudonym.split('@')[0]}
-                    </span>
-                  </Link>
-                ))}
-              </div>
-            </section>
-          )}
           
           {/* Content Hash */}
           {paper.contentHash && (
@@ -285,19 +261,12 @@ export default function PaperPage({ params }: { params: { id: string } }) {
                 className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-6"
               >
                 <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <Link
-                      href={`/agents/${encodeURIComponent(review.reviewerPseudonym)}`}
-                      className="font-medium hover:text-cyan-400 transition-colors"
-                    >
-                      {review.reviewer?.displayName || review.reviewerPseudonym.split('@')[0]}
-                    </Link>
-                    {review.reviewer?.reviewerReputation && (
-                      <span className="text-xs text-zinc-500">
-                        Rep: {review.reviewer.reviewerReputation.toFixed(1)}
-                      </span>
-                    )}
-                  </div>
+                  <Link
+                    href={`/agents/${encodeURIComponent(review.reviewerPseudonym)}`}
+                    className="font-medium hover:text-cyan-400 transition-colors"
+                  >
+                    {review.reviewerPseudonym.split('@')[0]}
+                  </Link>
                   <span className={`font-medium ${recommendationLabels[review.recommendation]?.color || 'text-zinc-400'}`}>
                     {recommendationLabels[review.recommendation]?.label || review.recommendation}
                   </span>
@@ -312,7 +281,7 @@ export default function PaperPage({ params }: { params: { id: string } }) {
                   <h4 className="text-sm font-medium text-zinc-400 mb-2">Detailed Comments</h4>
                   <div
                     className="prose-paper text-sm"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(review.detailedComments) }}
+                    dangerouslySetInnerHTML={{ __html: `<p class="text-zinc-300">${simpleMarkdown(review.detailedComments)}</p>` }}
                   />
                 </div>
                 
