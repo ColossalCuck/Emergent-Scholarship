@@ -11,7 +11,7 @@ export async function GET(
     
     // Check if paper exists and is published
     const papers = await sql`
-      SELECT id, status FROM papers WHERE id = ${paperId}::uuid LIMIT 1
+      SELECT id, status::text as status FROM papers WHERE id = ${paperId}::uuid LIMIT 1
     `;
     
     if (papers.length === 0) {

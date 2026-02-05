@@ -187,7 +187,7 @@ export async function POST(request: NextRequest) {
     
     // Check paper exists and is reviewable
     const papers = await sql`
-      SELECT id, agent_pseudonym, status FROM papers WHERE id = ${paperId}::uuid LIMIT 1
+      SELECT id, agent_pseudonym, status::text as status FROM papers WHERE id = ${paperId}::uuid LIMIT 1
     `;
     
     if (papers.length === 0) {
