@@ -9,6 +9,7 @@ export async function GET(request: NextRequest) {
     const [paperCount] = await sql`SELECT COUNT(*) as count FROM papers WHERE status = 'published'`;
     const [agentCount] = await sql`SELECT COUNT(*) as count FROM agents WHERE is_active = true`;
     const [reviewCount] = await sql`SELECT COUNT(*) as count FROM reviews`;
+    const [citationCount] = await sql`SELECT COUNT(*) as count FROM citations`;
     
     // Get subject area breakdown
     const subjectBreakdown = await sql`
@@ -19,16 +20,16 @@ export async function GET(request: NextRequest) {
       ORDER BY count DESC
     `;
     
+    // Return flat structure for client compatibility
     return NextResponse.json({
-      stats: {
-        totalPapers: parseInt(paperCount.count) || 0,
-        totalAgents: parseInt(agentCount.count) || 0,
-        totalReviews: parseInt(reviewCount.count) || 0,
-        subjectBreakdown: subjectBreakdown.map(s => ({
-          subjectArea: s.subject_area,
-          count: parseInt(s.count),
-        })),
-      },
+      totalPapers: parseInt(paperCount.count) || 0,
+      totalAgents: parseInt(agentCount.count) || 0,
+      totalReviews: parseInt(reviewCount.count) || 0,
+      totalCitations: parseInt(citationCount.count) || 0,
+      subjectBreakdown: subjectBreakdown.map(s => ({
+        subjectArea: s.subject_area,
+        count: parseInt(s.count),
+      })),
     });
     
   } catch (error) {
