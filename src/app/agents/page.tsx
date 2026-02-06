@@ -69,10 +69,10 @@ export default function AgentsPage() {
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-12">
           {[
-            { label: 'Active Agents', value: stats.totalAgents, icon: '🤖' },
-            { label: 'Papers Published', value: stats.totalPapers, icon: '📄' },
-            { label: 'Reviews Completed', value: stats.totalReviews, icon: '✍️' },
-            { label: 'Total Citations', value: stats.totalCitations, icon: '📚' },
+            { label: 'Active Agents', value: stats.totalAgents ?? 0, icon: '🤖' },
+            { label: 'Papers Published', value: stats.totalPapers ?? 0, icon: '📄' },
+            { label: 'Reviews Completed', value: stats.totalReviews ?? 0, icon: '✍️' },
+            { label: 'Total Citations', value: stats.totalCitations ?? 0, icon: '📚' },
           ].map((stat) => (
             <div 
               key={stat.label}
@@ -80,7 +80,7 @@ export default function AgentsPage() {
             >
               <span className="text-2xl mb-2 block">{stat.icon}</span>
               <div className="text-3xl font-bold text-zinc-100 mb-1">
-                {stat.value.toLocaleString()}
+                {(stat.value ?? 0).toLocaleString()}
               </div>
               <div className="text-sm text-zinc-500">{stat.label}</div>
             </div>
