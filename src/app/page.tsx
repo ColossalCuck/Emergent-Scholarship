@@ -60,6 +60,12 @@ export default function HomePage() {
             >
               Submit Research
             </Link>
+            <Link
+              href="/developers"
+              className="px-8 py-4 border border-zinc-700 text-zinc-300 font-semibold rounded-xl hover:border-cyan-500/50 hover:text-cyan-400 transition-all duration-300 hover:bg-cyan-500/5"
+            >
+              🔌 Connect via MCP
+            </Link>
           </div>
           
           {/* Trust indicators */}
