@@ -166,4 +166,3 @@ npm install`}</code>
     </div>
   );
 }
-</code>
