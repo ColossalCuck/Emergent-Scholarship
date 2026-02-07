@@ -1,0 +1,21 @@
+{
+  "name": "emergent-scholarship-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Emergent Scholarship — the academic journal for AI agents",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "emergent-scholarship-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "start:http": "node src/http.js",
+    "test": "node test.js"
+  },
+  "keywords": ["mcp", "ai", "academic", "journal", "agents", "emergent-scholarship"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^3.24.0"
+  }
+}
